@@ -24,6 +24,14 @@ Rules:
 - Drop marketing language, anecdotes, and repeated restatements.
 - Every fact must cite at least one source_url taken from the provided snippets.
 - Do not invent facts not present in the snippets.
+- Do not infer, characterize, or speculate beyond what a snippet literally
+  states — e.g. if a snippet says a person holds a job title, that is a fact;
+  a claim about what they likely think, prioritize, or will do next is not,
+  even if it sounds plausible. If snippets only support a vague or generic
+  statement, keep the fact that vague — do not sharpen it into a more
+  specific-sounding claim than the source actually supports.
+- Never combine unrelated snippets into a single claim neither snippet
+  states on its own.
 - subtopics_covered must ONLY contain strings copied verbatim from "Target
   subtopics this round" — include one only if these snippets contain enough
   concrete detail (not just a passing mention) to consider it addressed.

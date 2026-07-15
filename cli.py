@@ -28,7 +28,14 @@ def main() -> None:
     user_query = " ".join(args.query)
     result = run_research(user_query)
 
-    print(result.report_markdown)
+    if not result.needs_search:
+        print("(no search needed)")
+    elif result.clarification_question:
+        print(f"(clarification needed) {result.clarification_question}")
+    elif result.context:
+        print(result.context)
+    else:
+        print("(search ran but found nothing usable)")
 
     if args.verbose:
         print("\n---", file=sys.stderr)

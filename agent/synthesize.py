@@ -1,16 +1,12 @@
-"""Final synthesis (Layer 3): turn working memory into the curated report.
+"""Context handoff (Layer 3): turn working memory into a compact context
+block for the production chatbot's own LLM to use while answering — this
+module does NOT answer the user's question or produce a standalone report.
 
-Search Queries, Remaining Unknowns, and Sources are built deterministically
-from WorkingMemory/search_log — they're already accurate structured data, so
-asking an LLM to reproduce them would just add latency/tokens and a chance of
-it dropping or inventing entries.
-
-Two LLM calls do the actual thinking, each with a narrow job:
-- Key Findings: curate facts/concepts into a flat, grounded bullet list.
-- Analysis: the reasoning pass — cross-reference findings across entities/
-  subtopics and state what's still missing to answer the research question.
-  Kept separate from Key Findings so curation (must not editorialize) and
-  reasoning (must connect and judge) don't get blended into one prompt.
+One lean condensation call (fast model, short output) merges/dedupes the
+raw extracted facts into a few grounded bullets. Gaps and sources are built
+deterministically from WorkingMemory — they're already accurate structured
+data, so asking an LLM to reproduce them would just add latency and a
+chance of it dropping or inventing entries.
 """
 from __future__ import annotations
 
@@ -18,80 +14,61 @@ from . import config
 from .llm import call_text
 from .memory import WorkingMemory
 
-_SYSTEM = """You produce curated research summaries, not direct answers to the
-user's question. Given structured findings gathered from the web, write ONLY
-a markdown bullet list of Key Findings — concise, technical statements drawn
-only from the provided facts/concepts/definition. Do not add outside
-knowledge, do not add a heading, do not answer the user's question directly
-or add opinions — just the bullet list of what was learned from the web."""
-
-_REASONING_SYSTEM = """You are the reasoning step of a research agent. Given
-structured findings gathered from the web for a research question, write a
-short analysis with two parts, as markdown bullets under two bold labels:
-
-**Connections & tradeoffs** — where the facts support it, connect findings
-across the different entities or subtopics (compatibility, overlaps,
-contradictions, tradeoffs). Only draw conclusions the provided facts
-actually support — do not invent information or use outside knowledge.
-
-**Still needed to decide** — given the Remaining Unknowns and limitations,
-state plainly what additional information is still needed to fully answer
-the research question, and briefly why it matters.
-
-Keep it tight: 4-8 bullets total across both parts. If the facts are too
-thin to connect anything meaningfully, say so under the first label instead
-of forcing a connection."""
+_CONDENSE_SYSTEM = """You compress grounded web-search findings into compact
+context for another AI assistant to use while answering a user's question.
+Write 3-8 short plain bullet points, facts only, drawn strictly from the
+provided facts/concepts/definition. No heading, no meta-commentary, and do
+not answer the user's question yourself — this is background context for
+another model to reason over, not an answer."""
 
 
-def _render_search_queries_section(memory: WorkingMemory) -> str:
-    if not memory.search_log:
-        queries = "\n".join(f"- {q}" for q in memory.queries_executed)
-        return queries or "- (none)"
-
-    lines = []
-    for record in memory.search_log:
-        lines.append(f"**Iteration {record.iteration}:**")
-        for target in record.targets:
-            subtopic = target.get("subtopic")
-            label = f" _(targeting: {subtopic})_" if subtopic else ""
-            lines.append(f"- {target['query']}{label}")
-    return "\n".join(lines)
-
-
-def _render_list_section(items: list[str]) -> str:
-    if not items:
-        return "None identified"
+def _render_list(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
-def synthesize(user_query: str, memory: WorkingMemory) -> str:
+def build_context(
+    user_query: str,
+    memory: WorkingMemory,
+    searched_but_unresolved: list[str],
+    time_remaining: float = config.LLM_TIMEOUT_SECONDS,
+) -> str:
+    if not memory.facts and not memory.concepts and not memory.definition:
+        return ""
+
     facts_block = "\n".join(f"- {f.text} (sources: {', '.join(f.sources) or 'n/a'})" for f in memory.facts)
-    shared_context = (
-        f"Research topic: {user_query}\n\n"
-        f"Definition: {memory.definition or 'n/a'}\n"
-        f"Concepts: {', '.join(memory.concepts) or 'n/a'}\n"
-        f"Facts:\n{facts_block or 'n/a'}\n"
-        f"Limitations: {', '.join(memory.limitations) or 'n/a'}\n"
-    )
 
-    key_findings = call_text(
-        config.SYNTHESIS_MODEL,
-        _SYSTEM,
-        shared_context + "\nWrite the Key Findings bullet list per the instructions.",
-        max_tokens=800,
-    )
+    # Not worth attempting a call that might eat the full LLM_TIMEOUT_SECONDS
+    # if we don't have that much budget left — skip straight to the
+    # deterministic fallback instead of finding out via timeout.
+    if time_remaining < config.LLM_TIMEOUT_SECONDS:
+        condensed = facts_block or memory.definition or "(no details extracted)"
+    else:
+        prompt = (
+            f"User's question: {user_query}\n\n"
+            f"Definition: {memory.definition or 'n/a'}\n"
+            f"Concepts: {', '.join(memory.concepts) or 'n/a'}\n"
+            f"Facts:\n{facts_block or 'n/a'}\n"
+            f"Limitations: {', '.join(memory.limitations) or 'n/a'}\n\n"
+            "Write the compact context bullets per the instructions."
+        )
+        condensed = call_text(config.PLANNER_MODEL, _CONDENSE_SYSTEM, prompt, max_tokens=400)
+        if not condensed:
+            # Condensation call timed out/failed — fall back to the raw
+            # fact list rather than returning no context at all.
+            condensed = facts_block or memory.definition or "(no details extracted)"
 
-    reasoning_prompt = (
-        shared_context
-        + f"Remaining unknowns: {', '.join(memory.unknown_subtopics) or 'none'}\n\n"
-        "Write the Analysis per the instructions."
-    )
-    analysis = call_text(config.SYNTHESIS_MODEL, _REASONING_SYSTEM, reasoning_prompt, max_tokens=600)
+    never_reached = [s for s in memory.unknown_subtopics if s not in searched_but_unresolved]
 
-    return (
-        f"## Search Queries\n{_render_search_queries_section(memory)}\n\n"
-        f"## Key Findings\n{key_findings}\n\n"
-        f"## Analysis\n{analysis}\n\n"
-        f"## Remaining Unknowns\n{_render_list_section(memory.unknown_subtopics)}\n\n"
-        f"## Sources\n{_render_list_section(memory.sources)}"
-    )
+    sections = [f"## Web search context\n{condensed}"]
+    if searched_but_unresolved:
+        sections.append(
+            "## Searched but no public info found\n" + _render_list(searched_but_unresolved)
+        )
+    if never_reached:
+        sections.append(
+            "## Not covered (time budget)\n" + _render_list(never_reached)
+        )
+    if memory.sources:
+        sections.append("## Sources\n" + _render_list(memory.sources))
+
+    return "\n\n".join(sections)
