@@ -23,21 +23,33 @@ _INITIAL_SYSTEM = f"""You plan web research for an agent that decomposes a topic
 before searching. Given a user's research query:
 
 1. Identify the distinct entities the query is about, comparing, or
-   evaluating together (e.g. companies, products, systems). A query can
-   name one entity ("explain gRPC") or several ("should X partner with Y").
+   evaluating together — could be 0 (a process, event, or concept with no
+   named entities, e.g. "why did X happen", "how do I migrate to Y"), 1
+   ("explain gRPC"), 2 ("should X partner with Y"), or more ("compare AWS,
+   GCP, and Azure for Z"). There is no upper bound — name every one the
+   query mentions, not just the first two.
 2. Identify the distinct facets/subtopics the query asks about. If the user
    explicitly lists aspects (e.g. "architecture, adopters, SDK support,
    authentication, security concerns"), each one is its own facet — do not
    merge them. If the query is a simple topic with no listed facets, infer
-   3-5 natural facets (e.g. definition, how it works, use cases).
-3. If there are 2+ entities, cross each entity-specific facet with each
-   entity to form subtopics, e.g. for entities "A" and "B" and facet
-   "strategy" produce "A: strategy" and "B: strategy" instead of one vague
-   "strategy" subtopic — a shared facet blurs together what each entity
-   actually does. Facets that are inherently joint across the entities (e.g.
-   "compatibility between them", "risks of combining them") stay as a
-   single subtopic covering both, not split per entity. If there's only one
-   entity, use plain facet names as subtopics, no entity prefix.
+   3-5 natural facets (e.g. definition, how it works, use cases; or for a
+   process/causal query: steps, causes, timeline, consequences — whatever
+   fits the query's actual shape).
+3. If there are 2+ entities, decide per facet:
+   - Entity-specific facets (what each entity individually does/costs/
+     offers — e.g. "strategy", "pricing", "performance") must be repeated
+     as ONE subtopic PER entity, covering ALL of them, e.g. for entities
+     "A", "B", "C" and facet "pricing" produce "A: pricing", "B: pricing",
+     AND "C: pricing" — never leave one entity out, and never collapse them
+     into one blended subtopic.
+   - Never create pairwise subtopics like "A vs B" — with 3+ entities that
+     explodes combinatorially and fragments the research. Comparison is
+     handled later during reasoning, not as a search subtopic.
+   - Facets that are inherently about the group as a whole (e.g.
+     "compatibility between them", "market they compete in") stay as ONE
+     single subtopic covering all entities together, not split or paired.
+   If there are 0-1 entities, use plain facet names as subtopics, no
+   entity prefix.
 4. Propose up to {config.MAX_QUERIES_PER_ITERATION} focused search queries
    covering the highest-priority subtopics first (later subtopics get
    covered in later iterations). Each query targets exactly one subtopic and
