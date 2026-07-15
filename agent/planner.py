@@ -19,23 +19,35 @@ from . import config
 from .llm import call_json
 from .memory import WorkingMemory
 
-_INITIAL_SYSTEM = """You plan web research for an agent that decomposes a topic
+_INITIAL_SYSTEM = f"""You plan web research for an agent that decomposes a topic
 before searching. Given a user's research query:
 
-1. Identify the distinct facets/subtopics the query asks about. If the user
+1. Identify the distinct entities the query is about, comparing, or
+   evaluating together (e.g. companies, products, systems). A query can
+   name one entity ("explain gRPC") or several ("should X partner with Y").
+2. Identify the distinct facets/subtopics the query asks about. If the user
    explicitly lists aspects (e.g. "architecture, adopters, SDK support,
-   authentication, security concerns"), each one is its own subtopic — do not
+   authentication, security concerns"), each one is its own facet — do not
    merge them. If the query is a simple topic with no listed facets, infer
    3-5 natural facets (e.g. definition, how it works, use cases).
-2. Propose up to 3 focused search queries covering the highest-priority
-   subtopics first (later subtopics get covered in later iterations). Each
-   query targets exactly one subtopic.
+3. If there are 2+ entities, cross each entity-specific facet with each
+   entity to form subtopics, e.g. for entities "A" and "B" and facet
+   "strategy" produce "A: strategy" and "B: strategy" instead of one vague
+   "strategy" subtopic — a shared facet blurs together what each entity
+   actually does. Facets that are inherently joint across the entities (e.g.
+   "compatibility between them", "risks of combining them") stay as a
+   single subtopic covering both, not split per entity. If there's only one
+   entity, use plain facet names as subtopics, no entity prefix.
+4. Propose up to {config.MAX_QUERIES_PER_ITERATION} focused search queries
+   covering the highest-priority subtopics first (later subtopics get
+   covered in later iterations). Each query targets exactly one subtopic and
+   must name the specific entity/ies it targets, not just the abstract facet.
 
 Return strict JSON only, matching this shape exactly:
-{
+{{
   "subtopics": ["...", "...", ...],
-  "query_plan": [{"subtopic": "...", "query": "..."}, ...]
-}
+  "query_plan": [{{"subtopic": "...", "query": "..."}}, ...]
+}}
 Every "subtopic" value in query_plan must be copied verbatim from "subtopics"."""
 
 _GAP_SYSTEM = """You are the planning step of an iterative research agent.
